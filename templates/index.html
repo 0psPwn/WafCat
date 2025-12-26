@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WAF 攻击日志审计系统 (CTF Pro)</title>
+    <!-- Bootstrap 5 -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- ECharts Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    
+    <style>
+        body { background-color: #f0f2f5; font-family: 'Segoe UI', Roboto, sans-serif; }
+        
+        /* 卡片风格 */
+        .stat-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.03);
+            border: none;
+            height: 100%;
+            padding: 15px;
+        }
+        
+        .log-table-container { 
+            background: white; 
+            border-radius: 12px; 
+            box-shadow: 0 4px 12px rgba(0,0,0,0.03); 
+            overflow: hidden; 
+        }
+
+        /* 风险等级颜色 */
+        .risk-high { background-color: #ff4d4f; color: white; }
+        .risk-medium { background-color: #faad14; color: white; }
+        .risk-low { background-color: #52c41a; color: white; }
+        
+        /* 流量包展示样式 */
+        .http-packet {
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Consolas', 'Courier New', monospace;
+            padding: 20px;
+            border-radius: 6px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-size: 13px;
+            line-height: 1.5;
+            border-left: 4px solid #6c757d;
+        }
+        .req-color { border-left-color: #40a9ff; }
+        .rsp-color { border-left-color: #73d13d; }
+
+        .cursor-pointer { cursor: pointer; }
+        
+        /* 详情页元数据 */
+        .meta-row {
+            display: flex;
+            justify-content: space-between;
+            border-bottom: 1px solid #eee;
+            padding: 8px 0;
+            font-size: 0.9rem;
+        }
+        .meta-label { font-weight: 600; color: #666; }
+        .meta-val { color: #333; text-align: right; word-break: break-all; max-width: 60%; }
+        
+        /* 搜索框 */
+        .search-box {
+            max-width: 400px;
+        }
+    </style>
+</head>
+<body>
+
+<!-- 导航栏 -->
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4 sticky-top">
+    <div class="container-fluid px-4">
+        <a class="navbar-brand" href="#"><i class="bi bi-shield-lock-fill me-2"></i>雷池 WAF 日志审计</a>
+        <div class="d-flex text-white align-items-center">
+            <span id="global-status" class="me-3 small text-secondary">Ready</span>
+            <button class="btn btn-sm btn-outline-light" onclick="refreshData()">
+                <i class="bi bi-arrow-clockwise"></i> 刷新数据
+            </button>
+        </div>
+    </div>
+</nav>
+
+<div class="container-fluid px-4">
+    <!-- 统计仪表盘 -->
+    <div class="row mb-4 g-3">
+        <!-- 风险概览饼图 -->
+        <div class="col-md-3">
+            <div class="stat-card">
+                <h6 class="text-secondary fw-bold mb-3">🛡️ 威胁等级分布</h6>
+                <div id="chart-risk" style="height: 200px;"></div>
+            </div>
+        </div>
+        <!-- 攻击类型饼图 -->
+        <div class="col-md-4">
+            <div class="stat-card">
+                <h6 class="text-secondary fw-bold mb-3">⚔️ 攻击类型 Top 5</h6>
+                <div id="chart-type" style="height: 200px;"></div>
+            </div>
+        </div>
+        <!-- 攻击源排行柱状图 -->
+        <div class="col-md-5">
+            <div class="stat-card">
+                <h6 class="text-secondary fw-bold mb-3">🌍 攻击源 IP TOP 10</h6>
+                <div id="chart-ip" style="height: 200px;"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 筛选与列表区域 -->
+    <div class="row">
+        <div class="col-12">
+            <div class="log-table-container p-4">
+                <!-- 工具栏 -->
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h5 class="mb-0 fw-bold"><i class="bi bi-list-ul me-2"></i>攻击日志明细 <span class="badge bg-light text-dark border ms-2" id="total-badge">0</span></h5>
+                    
+                    <div class="d-flex gap-2">
+                        <div class="input-group search-box">
+                            <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
+                            <input type="text" id="search-input" class="form-control" placeholder="搜索 IP / URL / 类型...">
+                        </div>
+                        <button class="btn btn-primary" onclick="doSearch()">搜索</button>
+                    </div>
+                </div>
+                
+                <!-- 表格 -->
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle">
+                        <thead class="table-light">
+                            <tr>
+                                <th width="150">时间</th>
+                                <th width="160">源IP / 地区</th>
+                                <th>Host / URL</th>
+                                <th width="180">攻击类型</th>
+                                <th width="100">风险</th>
+                                <th width="80">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="log-list-body">
+                            <!-- JS 填充 -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- 分页 -->
+                <div class="d-flex justify-content-end align-items-center mt-3">
+                    <button class="btn btn-outline-secondary btn-sm me-2" onclick="changePage(-1)">上一页</button>
+                    <span id="page-info" class="mx-3 text-muted small">第 1 页</span>
+                    <button class="btn btn-outline-secondary btn-sm" onclick="changePage(1)">下一页</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 详情弹窗 -->
+<div class="modal fade" id="detailModal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-bug me-2"></i>流量还原分析</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body bg-light">
+                <div class="row">
+                    <!-- 左侧：关键字段 -->
+                    <div class="col-lg-3 mb-3">
+                        <div class="bg-white p-3 rounded shadow-sm">
+                            <h6 class="text-secondary fw-bold mb-3">元数据</h6>
+                            <div id="meta-container"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- 右侧：HTTP 报文 -->
+                    <div class="col-lg-9">
+                        <div class="bg-white p-3 rounded shadow-sm">
+                            <ul class="nav nav-pills mb-3" id="packetTab" role="tablist">
+                                <li class="nav-item">
+                                    <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#req-pane">Request Payload</button>
+                                </li>
+                                <li class="nav-item">
+                                    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#rsp-pane">Response Data</button>
+                                </li>
+                                <li class="nav-item">
+                                    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#json-pane">Raw JSON</button>
+                                </li>
+                            </ul>
+                            <div class="tab-content">
+                                <div class="tab-pane fade show active" id="req-pane">
+                                    <div class="http-packet req-color" id="http-request-view"></div>
+                                </div>
+                                <div class="tab-pane fade" id="rsp-pane">
+                                    <div class="http-packet rsp-color" id="http-response-view"></div>
+                                </div>
+                                <div class="tab-pane fade" id="json-pane">
+                                    <pre class="http-packet" id="json-view"></pre>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 引入库 -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+
+<script>
+    let currentPage = 1;
+    let totalPages = 1;
+
+    // ECharts 实例
+    let chartRisk, chartType, chartIp;
+
+    document.addEventListener('DOMContentLoaded', function() {
+        initCharts();
+        loadStats();
+        loadLogs(1);
+        
+        // 绑定回车搜索
+        document.getElementById('search-input').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') doSearch();
+        });
+    });
+
+    // 1. 初始化图表
+    function initCharts() {
+        chartRisk = echarts.init(document.getElementById('chart-risk'));
+        chartType = echarts.init(document.getElementById('chart-type'));
+        chartIp = echarts.init(document.getElementById('chart-ip'));
+        
+        // 响应式调整
+        window.addEventListener('resize', function() {
+            chartRisk.resize();
+            chartType.resize();
+            chartIp.resize();
+        });
+    }
+
+    // 2. 加载统计数据
+    function loadStats() {
+        fetch('/api/stats')
+            .then(res => res.json())
+            .then(data => {
+                // 更新风险饼图
+                chartRisk.setOption({
+                    tooltip: { trigger: 'item' },
+                    color: ['#ff4d4f', '#faad14', '#52c41a'],
+                    series: [{
+                        name: 'Risk Level',
+                        type: 'pie',
+                        radius: ['40%', '70%'],
+                        data: [
+                            { value: data.risk_stats.high, name: '高危' },
+                            { value: data.risk_stats.medium, name: '中危' },
+                            { value: data.risk_stats.low, name: '低危' }
+                        ],
+                        label: { show: false },
+                        emphasis: { label: { show: true } }
+                    }]
+                });
+
+                // 更新攻击类型饼图 (Top 5)
+                const sortedTypes = Object.entries(data.attack_type_stats)
+                    .sort((a,b) => b[1] - a[1])
+                    .slice(0, 5);
+                
+                chartType.setOption({
+                    tooltip: { trigger: 'item' },
+                    series: [{
+                        name: 'Attack Type',
+                        type: 'pie',
+                        radius: '65%',
+                        data: sortedTypes.map(k => ({ value: k[1], name: k[0] }))
+                    }]
+                });
+
+                // 更新 IP 柱状图
+                const ipNames = data.top_ips.map(i => i.ip);
+                const ipCounts = data.top_ips.map(i => i.count);
+                
+                chartIp.setOption({
+                    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+                    grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true, top: '10%' },
+                    xAxis: { type: 'category', data: ipNames, axisLabel: { interval: 0, rotate: 30 } },
+                    yAxis: { type: 'value' },
+                    series: [{
+                        data: ipCounts,
+                        type: 'bar',
+                        itemStyle: { color: '#1890ff' }
+                    }]
+                });
+            });
+    }
+
+    // 3. 搜索功能
+    function doSearch() {
+        currentPage = 1;
+        loadLogs(1);
+    }
+
+    function refreshData() {
+        fetch('/api/refresh')
+            .then(() => {
+                alert('数据已刷新');
+                loadStats();
+                loadLogs(1);
+            });
+    }
+
+    function changePage(delta) {
+        loadLogs(currentPage + delta);
+    }
+
+    // 4. 加载日志列表
+    function loadLogs(page) {
+        if (page < 1) return;
+        if (totalPages > 1 && page > totalPages) return;
+
+        const query = document.getElementById('search-input').value;
+        const btn = document.querySelector('button[onclick="doSearch()"]');
+        btn.disabled = true;
+
+        fetch(`/api/logs?page=${page}&limit=10&q=${encodeURIComponent(query)}`)
+            .then(res => res.json())
+            .then(data => {
+                const tbody = document.getElementById('log-list-body');
+                tbody.innerHTML = '';
+                
+                currentPage = data.page;
+                totalPages = data.pages;
+                document.getElementById('page-info').innerText = `第 ${currentPage} / ${totalPages} 页`;
+                document.getElementById('total-badge').innerText = data.total;
+
+                if (data.total === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">无匹配数据</td></tr>';
+                }
+
+                data.logs.forEach(item => {
+                    let riskBadge = '';
+                    if (item.risk_level >= 3) riskBadge = '<span class="badge risk-high">High</span>';
+                    else if (item.risk_level == 2) riskBadge = '<span class="badge risk-medium">Medium</span>';
+                    else riskBadge = '<span class="badge risk-low">Low</span>';
+
+                    const row = `
+                        <tr class="cursor-pointer" onclick="viewDetail('${item.filename}')">
+                            <td class="text-secondary small font-monospace">${formatTime(item.time)}</td>
+                            <td>
+                                <div class="fw-bold text-dark">${item.src_ip}</div>
+                                <div class="small text-muted"><i class="bi bi-geo-alt"></i> ${item.country} ${item.province}</div>
+                            </td>
+                            <td style="word-break: break-all;">
+                                <div class="fw-bold">${item.host}</div>
+                                <div class="small text-secondary font-monospace text-truncate" style="max-width: 300px;">${item.url}</div>
+                            </td>
+                            <td><span class="badge bg-light text-dark border">${item.attack_type}</span></td>
+                            <td>${riskBadge}</td>
+                            <td><button class="btn btn-sm btn-outline-primary btn-action">分析</button></td>
+                        </tr>
+                    `;
+                    tbody.innerHTML += row;
+                });
+                btn.disabled = false;
+            })
+            .catch(err => {
+                console.error(err);
+                btn.disabled = false;
+            });
+    }
+
+    // 5. 详情查看 (复用了之前的逻辑，略微美化)
+    function viewDetail(filename) {
+        const modal = new bootstrap.Modal(document.getElementById('detailModal'));
+        modal.show();
+        
+        document.getElementById('http-request-view').innerText = '加载中...';
+        document.getElementById('http-response-view').innerText = '';
+        
+        fetch(`/api/log_detail?filename=${filename}`)
+            .then(res => res.json())
+            .then(resData => {
+                if(resData.err) return;
+                const data = resData.data;
+
+                // 生成元数据列表
+                const metaFields = [
+                    {k: 'Event ID', v: data.EventId},
+                    {k: 'Source', v: `${data.src_ip}:${data.src_port}`},
+                    {k: 'Location', v: `${data.country} ${data.province} ${data.city}`},
+                    {k: 'Target', v: `${data.dst_ip}:${data.dst_port}`},
+                    {k: 'Rule ID', v: data.rule_id},
+                    {k: 'Detector', v: data.module}
+                ];
+                
+                let metaHtml = '';
+                metaFields.forEach(f => {
+                    metaHtml += `<div class="meta-row"><span class="meta-label">${f.k}</span><span class="meta-val">${f.v}</span></div>`;
+                });
+                document.getElementById('meta-container').innerHTML = metaHtml;
+
+                // 还原 HTTP
+                const reqHeader = (data.req_header || "").trim();
+                const reqBody = data.req_body || "";
+                document.getElementById('http-request-view').textContent = `${reqHeader}\n\n${reqBody}`;
+
+                const rspHeader = (data.rsp_header || "").trim();
+                const rspBody = data.rsp_body || "";
+                document.getElementById('http-response-view').textContent = `${rspHeader}\n\n${rspBody}`;
+                
+                document.getElementById('json-view').textContent = JSON.stringify(resData, null, 4);
+            });
+    }
+
+    function formatTime(ts) {
+        return new Date(ts * 1000).toLocaleString('zh-CN', { hour12: false });
+    }
+</script>
+
+</body>
+</html>
